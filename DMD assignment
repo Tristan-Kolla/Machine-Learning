@@ -1,0 +1,88 @@
+#Julia Code#
+
+
+
+#Installing Packages
+using Pkg
+Pkg.add("VideoIO")
+Pkg.add("Images")
+Pkg.add("ImageCore")
+Pkg.add("ImageView")
+Pkg.add("ProgressMeter")
+Pkg.add("LinearAlgebra")
+Pkg.add("JLD2")
+Pkg.add("AlgebraOfGraphics")
+Pkg.add("Plots")
+Pkg.add("PlotlyJS")
+
+#Splicing the Video File into a Series of Frames (png Files) and Converting Each Frame to Grayscale
+
+using VideoIO
+using Images
+using ImageCore
+using ImageView
+
+videoStream = VideoIO.openvideo("/Users/home/Downloads/monte_carlo_low.mp4") #opening video file
+
+#iteratively converting each frame of the video into grayscale and then saving it as png image
+frameCounter::BigInt = 1 
+while !eof(videoStream)
+    frame = VideoIO.read(videoStream)
+    frameEdited = Gray.(frame)
+    Images.save("$frameCounter.png", frameEdited)
+    frameCounter += 1;
+end
+
+m = counttotalframes(videoStream) #calculate number of frames in the video.
+
+#Encoding Images into Data Matrix 'X'
+
+X = fill(1.0, 518400, 379) #Initilizing the Data Matrix X
+
+dir = "/Users/home/MATH 494/Assignment 1" #directory
+imgnames = filter(x->occursin(".png",x), readdir(dir)) # Populate list of all .pngs
+intstrings =  map(x->split(x,".")[1], imgnames) # Extract index from filenames
+p = sortperm(parse.(Int, intstrings)) #sort files numerically
+imgnames = imgnames[p] 
+
+#Adding each frame of the grayscale video as a column vector and adding it to X
+frameCounter::BigInt = 1
+for i in 1:m
+    img = load(imgnames[i])
+    mat = convert(Array{Float64}, img)
+    T = reshape(mat, (540 * 960, 1))
+    X[:, i] = T
+end
+
+save("matrix.jld2", "Data Matrix", X)
+
+#DMD
+
+using LinearAlgebra
+
+k = 156 #rank-50 truncation
+dt = 6/379
+
+
+#Create Data Matrices for SVD
+X1 = X[:, 1:end-1]
+X2 = X[:, 2:end]
+
+#SVD
+F = svd(X1)
+
+U, S, V = F
+Σ = Diagonal(S)
+
+#Truncating to k
+U_r = U[:, 1:k]
+Σ_r = Σ[1:k, 1:k]
+V_r = V[:, 1:k]
+Vt_r = transpose(V[:, 1:k])
+
+#Eigen
+A = transpose(U_r)*X2*(V_r)*inv(Σ_r)
+
+W, D = eigen(A) #W = eigen values, D = Eigen vectors 
+Λ = Diagonal(W)
+ω = log(Λ)/dt;
