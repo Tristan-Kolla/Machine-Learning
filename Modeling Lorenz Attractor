@@ -1,0 +1,274 @@
+########################################
+#### G E N E R A T I N G    D A T A ####
+########################################
+
+#This code defines the vector field of the lorenz system that takes five arguments: 
+#t represents the time, 
+#u represents the state vector [x, y, z],
+#σ represents the parameter ...
+#ρ represents the parameter ...
+#β represents the parameter ...
+
+def lorenz(t, u, σ = 10, ρ = 28, β = 8/3):
+    x, y, z = u                    #Unpacks the state vector 'u' into three variables: x, y, and z
+    ẋ = σ*(y - x)                  #Rate of change of the variable x
+    ẏ = ρ*x - y - x*z              #Rate of change of the variable y
+    ż = x*y - β*z                  #Rate of change of the variable z
+    return np.array([ẋ, ẏ, ż])     #This line returns the time derivatives as a numpy array with three elements.
+
+# Generate data function
+def generate_data(ρ):                    #The purpose of this function is to generate data
+    t_span = (0, 100)                    #Time interval over which to integrate the solution
+    initial_state = [1.0, 1.0, 1.0]      #Initial Values of x, y, and z
+
+    t_eval = np.linspace(                #Creates an array of evenly spaced numbers between two specified values.
+        t_span[0],                       #Start of the time interval over which to integrate the solution. 
+        t_span[1],                       #This is the end of the time interval over which to integrate the solution
+        10000)                           #Number of time points to create in the array <-- If dt = 0.01, then 100 time units divided by dt = 10000
+    
+    sol = solve_ivp(lorenz,              #This line uses the solve_ivp function to solve the Lorenz system of differential equations.
+                    t_span,              #Time interval
+                    initial_state,       #Initial Conditions
+                    t_eval=t_eval,       #The time point at which to evaluate the solution 
+                    args=(10, ρ, 8/3))   #Value of the parameters      
+
+    return sol.y.T                       #This line returns the transpose of the solution array (sol.y), 
+                                         #which contains the values of x, y, and z at each time point.
+                                         #The transpose is taken so that the rows correspond to the time 
+                                         #points and the columns correspond to the state variables.
+
+#This code generates data for the Lorenz system with different values of the ρ parameter, 
+#which will be used to train and evaluate the neural network. 
+data_10 = generate_data(10)
+data_28 = generate_data(28)
+data_40 = generate_data(40)
+
+scaler = MinMaxScaler() #This line creates a MinMaxScaler object necessary for the next block of code
+
+#This code defines a function to preprocess data
+def preprocess_data(data, ρ):                  
+    scaled_data = scaler.fit_transform(data)    #This line scales the input data to a range between 0 and 1. 
+    X = []                                      #This line creates an empty list to store the input sequences for the neural network.
+    y = []                                      #This line creates an empty list to store the output sequences for the neural network.
+
+    
+    #This code generates input/output sequences for a neural network
+    for i in range(len(scaled_data) - sequence_length - 1):
+        X.append(np.hstack((scaled_data[i:i + sequence_length], ρ * np.ones((sequence_length, 1)))).flatten())
+        y.append(scaled_data[i + sequence_length])
+
+    return np.array(X), np.array(y)             #This line returns the input/output sequences as NumPy arrays.
+
+#This code sets the hyperparameter 'sequence length'. 
+#It determines the number of time steps that are used to 
+#make a prediction at each step during training.
+
+sequence_length = 50   
+
+X_10, y_10 = preprocess_data(data_10, 10) #?
+X_28, y_28 = preprocess_data(data_28, 28) #?
+X_40, y_40 = preprocess_data(data_40, 40) #?
+
+X = np.vstack((X_10, X_28, X_40)) #?
+y = np.vstack((y_10, y_28, y_40)) #?
+
+##################################################################
+#### T R A I N I N G    T H E    N E U R A L    N E T W O R K ####
+##################################################################
+
+#Define the neural network architecture
+#Input: Sequence of ODE data points of length 50 with parameter ρ
+#Output: Predicted values of next Data point 
+input_sequence = Input(shape=(sequence_length * 4,))
+dense1 = Dense(50, activation='relu')(input_sequence)
+dense2 = Dense(50, activation='relu')(dense1)
+output = Dense(3)(dense2)
+
+
+#This code defines a Keras model that maps the input tensor to the output tensor.
+model = Model(inputs=input_sequence, outputs=output)
+
+
+def train_model_with_loss(loss_function):
+    model.compile(loss=loss_function) #This line compiles the Keras model with the specified loss function
+
+    #This code trains the model on the input/output using the specified hyperparameters.
+    history = model.fit(X,                     #Input Data
+                        y,                     #Output Data
+                        epochs=100,            #Determines the number of times the model will be trained on the entire dataset
+                        batch_size=64,         #Determines the number of input/output pairs that are processed at once.
+                        validation_split=0.2,  #Determines the fraction of the training data that will be used for validation during training
+                        verbose=1              #Level of logging during training
+                        )
+    return history                             
+
+# List of loss functions to compare
+loss_functions = ['MSE',             
+                  'MAE',            
+                  'Huber']
+
+# Create a new figure for the combined plot
+plt.figure(figsize=(8, 6))
+fig, ax = plt.subplots()
+
+
+# Train the model and plot the loss vs. epochs graphs for each loss function
+for loss_function in loss_functions:
+    print(f'{loss_function}')
+    print(model.summary())
+    history = train_model_with_loss(loss_function)
+    plt.plot(history.history['loss'], label=f'{loss_function}')
+
+# Configure plot labels and legend
+ax.set_xlabel('Epoch')
+ax.set_ylabel('Loss')
+ax.set_title('Loss vs. Epochs for Different Loss Functions')
+ax.set_yscale('log')
+ax.legend()
+
+# Show the combined plot
+plt.show()
+
+
+########################################
+#### F O R E C A S T I N G          ####
+########################################
+
+####A lot of repeat code from previous section
+####This cell is train the LNN
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Input, Flatten, concatenate
+from tensorflow.keras import Model
+from sklearn.preprocessing import MinMaxScaler
+
+# Define Lorenz attractor system
+def lorenz(t, state, sigma=10, rho=28, beta=8/3):
+    x, y, z = state
+    dx_dt = sigma * (y - x)
+    dy_dt = x * (rho - z) - y
+    dz_dt = x * y - beta * z
+    return [dx_dt, dy_dt, dz_dt]
+
+# Generate data
+def generate_data(rho):
+    t_span = (0, 100)
+    initial_state = [1, 1, 1]
+    t_eval = np.linspace(t_span[0], t_span[1], 10000)
+    sol = solve_ivp(lorenz, t_span, initial_state, t_eval=t_eval, args=(10, rho, 8/3))
+    return sol.y.T
+
+data_10 = generate_data(10)
+data_28 = generate_data(28)
+data_40 = generate_data(40)
+data_40 = generate_data(17)
+data_40 = generate_data(35)
+
+scaler = MinMaxScaler()
+
+# Preprocess data
+def preprocess_data(data, rho):
+    scaled_data = scaler.fit_transform(data)
+    X = []
+    y = []
+    for i in range(len(scaled_data) - sequence_length - 1):
+        X.append(np.hstack((scaled_data[i:i + sequence_length], rho * np.ones((sequence_length, 1)))))
+        y.append(scaled_data[i + sequence_length])
+
+    return np.array(X), np.array(y)
+
+sequence_length = 100
+X_10, y_10 = preprocess_data(data_10, 10)
+X_28, y_28 = preprocess_data(data_28, 28)
+X_40, y_40 = preprocess_data(data_40, 40)
+
+X = np.vstack((X_10, X_28, X_40))
+y = np.vstack((y_10, y_28, y_40))
+
+# Define the neural network architecture
+input_sequence = Input(shape=(sequence_length, 4))
+flatten = Flatten()(input_sequence)
+dense1 = Dense(100, activation='relu')(flatten)
+dense2 = Dense(100, activation='relu')(dense1)
+output = Dense(3)(dense2)
+
+model = Model(inputs=input_sequence, outputs=output)
+
+# Compile the model
+model.compile(loss='Huber',optimizer='adam')
+
+# Train the neural network
+model.fit(X, y, epochs=200, batch_size=64, validation_split=0.2, verbose=1)
+
+### This code Tests the LNN on the trained data
+
+#Generate test data
+test_data = generate_data(10)
+
+#Preprocess the test data
+test_sequence_length = 50
+X_test, y_test = preprocess_data(test_data, 10)
+
+# Use the trained model to predict the future states
+y_pred = model.predict(X_test)
+
+#Compare the model's predictions with the actual future states
+y_test_inv = scaler.inverse_transform(y_test)
+y_pred_inv = scaler.inverse_transform(y_pred)
+
+mse = np.mean(np.square(y_test_inv - y_pred_inv))
+print("Mean Squared Error:", mse)
+
+# Create subplots for each coordinate (X, Y, Z)
+fig, axs = plt.subplots(3, 1, figsize=(12, 12))
+coordinates = ['X', 'Y', 'Z']
+
+for i in range(3):
+    axs[i].plot(y_test_inv[:, i], label='True Lorenz trajectory')
+    axs[i].plot(y_pred_inv[:, i], label='Predicted Lorenz trajectory')
+    axs[i].set_xlabel('Time steps')
+    axs[i].set_ylabel(f'{coordinates[i]}')
+    axs[i].legend()
+    axs[i].set_title(f'True vs. Predicted Trajectory of {coordinates[i]} Values (ρ = 10)')
+
+plt.tight_layout()
+plt.show()
+
+### Forecasting Testing
+
+# Function to forecast future values
+def forecast(model, initial_sequence, n_steps, rho):
+    sequence = initial_sequence.copy()
+    predictions = []
+    for _ in range(n_steps):
+        input_sequence = np.hstack((sequence, rho * np.ones((sequence.shape[0], 1))))
+        prediction = model.predict(input_sequence[np.newaxis, :, :])[0]
+        predictions.append(prediction)
+        sequence = np.vstack((sequence[1:], prediction))
+
+    return scaler.inverse_transform(predictions)
+
+# Forecast 100 units into the future
+n_forecast = 100
+initial_sequence = data_28[-sequence_length - n_forecast:-n_forecast]  # Using data_28 as an example
+forecasted_values = forecast(model, scaler.transform(initial_sequence), n_forecast, 28)
+
+# Get true values
+true_values = data_28[-n_forecast:]
+
+
+# Plot the true values and the forecasted values for each coordinate
+fig, axs = plt.subplots(3, 1, figsize=(12, 18))
+coordinates = ['X', 'Y', 'Z']
+for i in range(3):
+    axs[i].plot(true_values[:, i], label='True values')
+    axs[i].plot(forecasted_values[:, i], label='Predicted values')
+    axs[i].legend()
+    axs[i].set_xlabel('Time Steps')
+    axs[i].set_ylabel(f'{coordinates[i]}-axis')
+    axs[i].set_title(f'Lorenz Attractor: True vs Predicted {coordinates[i]} values (ρ = 40)')
+plt.tight_layout()
+plt.show()
