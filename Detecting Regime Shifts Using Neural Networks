@@ -1,0 +1,145 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import random
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import scipy.stats
+
+#Definitions
+
+def f(t, x, a, sigma):
+    deterministic = a * x * (1 - x) - t / 20
+    stochastic = sigma * np.random.normal(0, 1)
+    return deterministic + stochastic
+
+def solve_system(a, x0, t_span, t_eval, sigma):
+    dt = t_eval[1] - t_eval[0]
+    x = np.zeros(len(t_eval))
+    x[0] = x0
+
+    for i in range(1, len(t_eval)):
+        x[i] = x[i - 1] + f(t_eval[i - 1], x[i - 1], a, sigma) * dt
+
+    return t_eval, x
+
+class NeuralNetwork(nn.Module):
+    def __init__(self):
+        super(NeuralNetwork, self).__init__()
+        self.linear1 = nn.Linear(100, 64)
+        self.relu = nn.ReLU()
+        self.linear2 = nn.Linear(64, 1)
+
+    def forward(self, x):
+        x = self.linear1(x)
+        x = self.relu(x)
+        x = self.linear2(x)
+        return x
+
+# Generate training data
+n_samples = 1000
+t_span = (0, 10)
+t_eval = np.linspace(0, 10, 100)
+sigma = 0.1
+
+X_train = []
+y_train = []
+
+for _ in range(n_samples):
+    a = random.uniform(1.0, 2.0)
+    x0 = random.uniform(0.5, 1.0)
+    _, sol_y = solve_system(a, x0, t_span, t_eval, sigma)
+
+    X_train.append(sol_y)
+    y_train.append(a / 4)
+
+X_train = torch.tensor(X_train, dtype=torch.float32)
+y_train = torch.tensor(y_train, dtype=torch.float32).view(-1, 1)
+
+# Create and train the neural network
+net = NeuralNetwork()
+criterion = nn.MSELoss()
+optimizer = optim.Adam(net.parameters(), lr=0.001)
+
+n_epochs = 2000
+for epoch in range(n_epochs):
+    optimizer.zero_grad()
+    outputs = net(X_train)
+    loss = criterion(outputs, y_train)
+    loss.backward()
+    optimizer.step()
+
+    if (epoch + 1) % 500 == 0:
+        print(f"Epoch: {epoch + 1}, Loss: {loss.item()}")
+
+#Training Data Samples Plots
+
+a_values = [4 * y.item() for y in y_train]
+
+n_plots = 5
+fig, axs = plt.subplots(n_plots, 1, figsize=(8, 2 * n_plots), sharex=True)
+for i in range(n_plots):
+    a = a_values[i]
+    axs[i].plot(t_eval, X_train[i].numpy())
+    axs[i].axvline(x=a * 5, linestyle='--', color='r', label = "Regime Shift")
+    axs[i].set_title(f'Training Data Sample {i + 1}  (r = {a:.3f})')
+    axs[i].set_ylabel('Population Density')
+
+plt.xlabel('Time')
+plt.tight_layout()
+plt.show()
+
+# Generate test data
+n_test_samples = 500
+X_test = []
+y_test = []
+test_initial_conditions = []
+
+for _ in range(n_test_samples):
+    a = random.uniform(1.0, 2.0)
+    x0 = random.uniform(0.5, 1.0)
+    sigma = 0.1
+    sol_t, sol_x = solve_system(a, x0, t_span, t_eval, sigma)
+
+    X_test.append(sol_x)
+    y_test.append(a / 4)
+    test_initial_conditions.append((a, x0))
+
+X_test = torch.tensor(X_test, dtype=torch.float32)
+y_test = torch.tensor(y_test, dtype=torch.float32).view(-1, 1)
+
+# Evaluate the neural network on test data
+net.eval()
+with torch.no_grad():
+    predictions = net(X_test)
+
+# Calculate mean squared error
+mse = criterion(predictions, y_test).item()
+print(f"Mean Squared Error on Test Data: {mse}")
+
+# Calculate Pearson correlation coefficient and coefficient of determination
+true_values = y_test.numpy().flatten()
+predicted_values = predictions.numpy().flatten()
+r, _ = scipy.stats.pearsonr(true_values, predicted_values)
+r_squared = r ** 2
+print(f"Pearson correlation coefficient (r): {r:.4f}")
+print(f"Coefficient of determination (R^2): {r_squared:.4f}")
+
+true_values = y_test.numpy().flatten()
+predicted_values = predictions.numpy().flatten()
+
+# Plot true values vs. predicted values for all test samples
+plt.figure(figsize=(8, 8))
+plt.scatter(true_values, predicted_values, alpha=0.5)
+plt.xlabel('True Threshold Values')
+plt.ylabel('Predicted Threshold Values')
+plt.title('Predicted vs. True Values')
+
+# Find the maximum value among true_values and predicted_values
+max_value = max(max(true_values), max(predicted_values))
+
+# Plot the ideal prediction line going through the origin
+plt.plot([0, max_value], [0, max_value], 'r--', label='Ideal Prediction')
+plt.legend()
+plt.show()
